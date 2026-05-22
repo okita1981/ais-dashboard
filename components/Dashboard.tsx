@@ -6,12 +6,14 @@ import AdTable from './AdTable';
 import { AisWeights, AdData, AdType } from '../types';
 import { DEFAULT_WEIGHTS, calculateExposure, calculateVAF, calculateAIS, calculateIntegrityScore, getAISStatus } from '../logic';
 import { MOCK_AD_DATA } from '../constants';
-import { fetchLiveAisData } from '../services/api';
+import { fetchLiveAisData, DashboardData } from '../services/api';
 
 interface DashboardProps {
   weights: AisWeights;
   ads: AdData[];
   liveHistory: AdData[];
+  liveDashboard?: DashboardData | null;
+  liveError?: string | null;
   dataMode: 'demo' | 'live';
   setDataMode: (mode: 'demo' | 'live') => void;
   isLiveLoading: boolean;
@@ -19,12 +21,14 @@ interface DashboardProps {
   setSelectedRange: (range: string) => void;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ 
-  weights, 
-  ads, 
-  liveHistory, 
-  dataMode, 
-  setDataMode, 
+const Dashboard: React.FC<DashboardProps> = ({
+  weights,
+  ads,
+  liveHistory,
+  liveDashboard,
+  liveError,
+  dataMode,
+  setDataMode,
   isLiveLoading,
   selectedRange,
   setSelectedRange
@@ -33,9 +37,21 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [timeSeriesMode, setTimeSeriesMode] = useState<'hourly' | 'daily'>('hourly');
   const calendarRef = useRef<HTMLDivElement>(null);
 
-  // Live Mode data aggregation for charts
+  // Live Mode data aggregation for charts.
+  // Prefer authoritative aggregates from /api/dashboard (liveDashboard.recentScores)
+  // and only fall back to client-side aggregation of liveHistory if those are absent.
   const liveChartData = useMemo(() => {
-    if (dataMode !== 'live' || liveHistory.length === 0) return [];
+    if (dataMode !== 'live') return [];
+
+    if (liveDashboard?.recentScores && liveDashboard.recentScores.length > 0) {
+      return liveDashboard.recentScores.map(p => ({
+        time: p.time,
+        score: p.score,
+        events: p.events
+      }));
+    }
+
+    if (liveHistory.length === 0) return [];
     
     if (timeSeriesMode === 'hourly') {
       // Group by hour
@@ -157,9 +173,21 @@ const Dashboard: React.FC<DashboardProps> = ({
     if (dataMode === 'demo') {
       return { avg: 15.5, integrity: 84.5, positive: 70, neutral: 20, negative: 10 };
     }
-    
+
+    // Prefer server-aggregated values when available (more accurate, event-weighted)
+    if (liveDashboard) {
+      const avg = liveDashboard.averageAIS;
+      return {
+        avg,
+        integrity: calculateIntegrityScore(avg),
+        positive: liveDashboard.scoreDistribution.healthy,
+        neutral: liveDashboard.scoreDistribution.warning,
+        negative: liveDashboard.scoreDistribution.critical
+      };
+    }
+
     if (ads.length === 0) return { avg: 0, integrity: 100, positive: 0, neutral: 0, negative: 0 };
-    
+
     const count = ads.length;
     const processedAds = ads.map(ad => {
       const stress = ad.avgScore || 0;
@@ -175,7 +203,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     const negative = (processedAds.filter(ad => ad.status === 'Negative').length / count) * 100;
 
     return { avg: avgStress, integrity: avgIntegrity, positive, neutral, negative };
-  }, [ads, dataMode]);
+  }, [ads, dataMode, liveDashboard]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -204,8 +232,18 @@ const Dashboard: React.FC<DashboardProps> = ({
             )}
           </div>
           <p className="text-slate-500 mt-1 flex items-center text-sm">
-            {dataMode === 'demo' ? '期間選択に連動するシミュレーションデータを表示中' : '外部APIから取得したリアルタイムデータを表示中'}
+            {dataMode === 'demo'
+              ? '期間選択に連動するシミュレーションデータを表示中'
+              : liveDashboard
+                ? `Supabaseから ${liveDashboard.totalEvents.toLocaleString()} 件のイベントを集計中`
+                : 'Supabaseからリアルタイムデータを取得中…'}
           </p>
+          {dataMode === 'live' && liveError && (
+            <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-semibold">
+              <span>⚠️</span>
+              <span>API エラー: {liveError}</span>
+            </div>
+          )}
         </div>
         <div className="flex items-center space-x-3">
           <div className="relative" ref={calendarRef}>
@@ -234,11 +272,11 @@ const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </div>
 
-      <StatCards 
-        weights={weights} 
-        ads={ads} 
-        totalLiveEvents={liveHistory.length} 
-        dataMode={dataMode} 
+      <StatCards
+        weights={weights}
+        ads={ads}
+        totalLiveEvents={liveDashboard?.totalEvents ?? liveHistory.length}
+        dataMode={dataMode}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

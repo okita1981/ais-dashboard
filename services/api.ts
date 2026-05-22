@@ -1,110 +1,133 @@
+// Client-side API layer.
+// Talks to Vercel Functions at /api/events (POST) and /api/dashboard (GET).
+// The legacy Google Apps Script endpoint has been retired in favor of Supabase.
 
 import { AdData } from '../types';
 
+export interface DashboardData {
+  range: string;
+  totalEvents: number;
+  averageAIS: number;
+  averageVAF: number;
+  scoreDistribution: {
+    healthy: number;
+    warning: number;
+    critical: number;
+  };
+  recentScores: { time: string; score: number; events: number }[];
+  adRankings: {
+    id: string;
+    name: string;
+    type: string;
+    exposure: number;
+    vaf: number;
+    aisScore: number;
+    events: number;
+    status: 'healthy' | 'warning' | 'critical';
+  }[];
+}
+
+export interface EventInput {
+  adId: string;
+  adName: string;
+  adType: 'Popup' | 'Banner' | 'Native' | 'Video';
+  duration: number;
+  occupancy?: number;
+  volumeLevel?: number;
+  isSticky?: boolean;
+  isForced?: boolean;
+  isInterrupted?: boolean;
+  isAudioIntrusive?: boolean;
+  continueAfterAd?: boolean;
+  noMute?: boolean;
+  noSkip?: boolean;
+  noLeave?: boolean;
+  userAction?: 'view' | 'skip' | 'mute' | 'leave' | 'reset';
+  timestamp?: number;
+}
+
+export interface EventResponse {
+  id?: string;
+  aisScore: number;
+  exposure: number;
+  vaf: number;
+  status: 'healthy' | 'warning' | 'critical';
+}
+
+const API_BASE = ''; // same-origin
+
 /**
- * AIS API Service
- * LIVEモードにおける実データの取得や、外部システムとの連携を管理します。
+ * Fetch aggregated dashboard data from Supabase via /api/dashboard.
  */
+export const fetchDashboardData = async (
+  range: '24h' | '7d' | '30d' | 'all' = '7d'
+): Promise<DashboardData> => {
+  const response = await fetch(`${API_BASE}/api/dashboard?range=${range}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' }
+  });
 
-// 外部データソース（Google Apps Script）のエンドポイント
-const LIVE_DATA_ENDPOINT = 'https://script.google.com/macros/s/AKfycbxZAObtc-3QzSf1m7bVXlo7C0cqRSyvvLXPDHNq_9DlRrnYMJbqTe5S9xAg184imZU/exec';
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Dashboard API ${response.status}: ${text || response.statusText}`);
+  }
+
+  return response.json();
+};
 
 /**
- * 外部APIから実データを取得します。
- * GAS等のバックエンドに蓄積されたSDKからの計測データをダッシュボード形式に変換して返します。
+ * Send a single ad event to /api/events. Returns the server-calculated scores.
+ */
+export const postEvent = async (event: EventInput): Promise<EventResponse> => {
+  const response = await fetch(`${API_BASE}/api/events`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify(event)
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Event API ${response.status}: ${text || response.statusText}`);
+  }
+
+  return response.json();
+};
+
+/**
+ * Backward-compat shim used by App.tsx legacy Live mode.
+ * Converts aggregated DashboardData into AdData[] expected by the old UI flow.
+ * New code should call fetchDashboardData() directly.
  */
 export const fetchLiveAisData = async (): Promise<AdData[]> => {
-    const response = await fetch(LIVE_DATA_ENDPOINT, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-      },
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+  const dash = await fetchDashboardData('30d');
+  return dash.adRankings.map(r => ({
+    id: r.id,
+    token: r.id,
+    name: r.name,
+    type: (r.type as AdData['type']) || 'Native',
+    events: r.events,
+    date: new Date().toISOString().split('T')[0],
+    timestamp: Date.now(),
+    avgScore: r.aisScore,
+    latestScore: r.aisScore,
+    totalScore: r.aisScore * r.events,
+    status:
+      r.status === 'healthy' ? 'Positive' : r.status === 'warning' ? 'Neutral' : 'Negative',
+    log: {
+      duration: 0,
+      occupancy: 0,
+      volumeLevel: 0,
+      isSticky: false,
+      isForced: false,
+      isInterrupted: false,
+      isAudioIntrusive: false,
+      continueAfterAd: true,
+      noMute: true,
+      noSkip: true,
+      noLeave: true
     }
-    
-    const responseText = await response.text();
-    
-    // JSONかどうかをチェック
-    let rawData;
-    try {
-      rawData = JSON.parse(responseText);
-    } catch (e) {
-      console.error('[AIS API] Received non-JSON response:', responseText.substring(0, 100));
-      throw new Error(`Invalid JSON response from server. Starts with: ${responseText.substring(0, 20)}...`, { cause: e });
-    }
-    
-    // GASからのレスポンスが配列でない場合のガード
-    if (!rawData) return [];
-    const dataArray = Array.isArray(rawData) ? rawData : (rawData.data || []);
-    
-    if (!Array.isArray(dataArray)) {
-      console.error('[AIS API] Invalid data format received:', rawData);
-      return [];
-    }
-
-    if (dataArray.length === 0) {
-      return [];
-    }
-
-    const processedData = dataArray.map((item: any, index: number) => {
-      if (!item) return null;
-      const token = item.token || item.projectToken || '';
-      const preset = item.preset || item.presetName || '';
-      
-      // プリセット名のマッピング
-      const presetMap: Record<string, string> = {
-        'video-demo': '動画広告（スキップ不可）',
-        'popup-demo': '全画面ポップアップ',
-        'banner-demo': 'サイドバーバナー',
-        'sticky-demo': '追従型バナー',
-        'forced-video': '強制視聴動画',
-        'default': '標準計測広告'
-      };
-
-      // 名称の決定ロジック: 1.明示的な名前 2.マッピングされたプリセット名 3.トークン 4.デフォルト
-      let adName = item.name || item.adName || '';
-      if (!adName) {
-        if (preset && presetMap[preset]) {
-          adName = presetMap[preset];
-        } else if (token) {
-          // トークンをそのまま名称として使用（ユーザー要望）
-          adName = token;
-        } else {
-          adName = '外部計測広告';
-        }
-      }
-      
-      const metrics = item.metrics || {};
-      
-      return {
-        id: item.id || item.adId || token || `live-${index}-${Math.random().toString(36).substr(2, 5)}`,
-        token: token,
-        name: adName,
-        type: item.type || item.adType || 'Video',
-        events: Number(item.events) || 1,
-        date: item.date || (item.timestamp ? new Date(item.timestamp).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]),
-        timestamp: item.timestamp ? new Date(item.timestamp).getTime() : (item.date ? new Date(item.date).getTime() : Date.now()),
-        frustration: Number(metrics.frustration || item.frustration) || ((metrics.isInterrupted || item.isInterrupted) ? 40 : 10),
-        dropOff: Number(metrics.dropOff || item.dropOff) || 0,
-        log: {
-          duration: Number(metrics.duration || item.duration) || 15,
-          occupancy: Number(metrics.occupancy || item.occupancy) || 0,
-          volumeLevel: Number(metrics.volumeLevel || item.volumeLevel) || 0,
-          isSticky: !!(metrics.isSticky || item.isSticky),
-          isForced: !!(metrics.isForced || item.isForced),
-          isInterrupted: !!(metrics.isInterrupted || item.isInterrupted),
-          isAudioIntrusive: !!(metrics.isAudioIntrusive || item.isAudioIntrusive),
-          continueAfterAd: metrics.continueAfterAd ?? item.continueAfterAd ?? true,
-          noMute: metrics.noMute ?? item.noMute ?? false,
-          noSkip: metrics.noSkip ?? item.noSkip ?? false,
-          noLeave: metrics.noLeave ?? item.noLeave ?? true
-        }
-      };
-    }).filter(Boolean) as AdData[];
-
-    // タイムスタンプ順にソートして時系列処理を容易にする
-    return processedData.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  }));
 };

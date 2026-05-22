@@ -25,6 +25,7 @@ import {
   DEFAULT_WEIGHTS
 } from '../logic';
 import { AisWeights } from '../types';
+import { postEvent, EventInput } from '../services/api';
 
 interface DemoPageProps {
   weights?: AisWeights;
@@ -222,23 +223,71 @@ const DemoPage: React.FC<DemoPageProps> = ({ weights }) => {
 
   const score = getScoreColor(ais);
 
+  // ============ Event sending to /api/events ============
+  // Build the payload using a synthesized actions object so callers can pass
+  // the action state they are about to commit (state updates are async).
+  const buildPayload = (
+    nextActions: UserActions,
+    userAction: EventInput['userAction']
+  ): EventInput => ({
+    adId: `DEMO-${profile.id.toUpperCase()}-01`,
+    adName: `デモ：${profile.label}`,
+    adType: profile.id === 'popup' ? 'Popup' : profile.id === 'banner' ? 'Banner' : 'Native',
+    duration: elapsed,
+    occupancy: profile.occupancy,
+    volumeLevel: profile.volumeLevel,
+    isSticky: profile.isSticky,
+    isForced: profile.isForced,
+    isInterrupted: profile.isInterrupted,
+    isAudioIntrusive: nextActions.muted ? false : profile.isAudioIntrusive,
+    continueAfterAd:
+      profile.continueAfterAd && !nextActions.skipped && !nextActions.left && !nextActions.muted,
+    noMute: nextActions.muted ? false : profile.noMute,
+    noSkip: nextActions.skipped ? false : profile.noSkip,
+    noLeave: nextActions.left ? false : profile.noLeave,
+    userAction,
+    timestamp: Date.now()
+  });
+
+  const sendEvent = (nextActions: UserActions, userAction: EventInput['userAction']) => {
+    const payload = buildPayload(nextActions, userAction);
+    postEvent(payload)
+      .then(res => {
+        console.log(
+          `%c[AIS] event sent: ${userAction} → AIS=${res.aisScore} (${res.status})`,
+          'color: #45A29E; font-weight: bold;'
+        );
+      })
+      .catch(err => {
+        console.warn('[AIS] event send failed (this is ok if /api is not running):', err.message);
+      });
+  };
+
   const handleSkip = () => {
     if (adType === 'popup' && elapsed < profile.durationCap) {
       // Popup cannot be skipped before 15s — still record the attempt as frustration
-      setActions(prev => ({ ...prev, skipped: true }));
+      const next = { ...actions, skipped: true };
+      setActions(next);
+      sendEvent(next, 'skip');
       return;
     }
-    setActions(prev => ({ ...prev, skipped: true }));
+    const next = { ...actions, skipped: true };
+    setActions(next);
     setAdActive(false);
+    sendEvent(next, 'skip');
   };
 
   const handleMute = () => {
-    setActions(prev => ({ ...prev, muted: !prev.muted }));
+    const next = { ...actions, muted: !actions.muted };
+    setActions(next);
+    sendEvent(next, 'mute');
   };
 
   const handleLeave = () => {
-    setActions(prev => ({ ...prev, left: true }));
+    const next = { ...actions, left: true };
+    setActions(next);
     setAdActive(false);
+    sendEvent(next, 'leave');
   };
 
   const handleReset = () => {
@@ -248,6 +297,29 @@ const DemoPage: React.FC<DemoPageProps> = ({ weights }) => {
     setPulse(false);
     prevAis.current = 0;
   };
+
+  // When the ad auto-terminates by reaching the duration cap (popup 15s),
+  // post a final "view" event so dashboards see the completed exposure.
+  const endedRef = useRef(false);
+  useEffect(() => {
+    if (
+      adActive &&
+      profile.durationCap > 0 &&
+      elapsed >= profile.durationCap &&
+      !endedRef.current
+    ) {
+      endedRef.current = true;
+      sendEvent(actions, 'view');
+    }
+    if (!adActive) endedRef.current = true;
+    // reset flag on ad type/active change is handled by the adType reset effect below
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elapsed, adActive, profile.durationCap]);
+
+  // Reset endedRef when ad type changes
+  useEffect(() => {
+    endedRef.current = false;
+  }, [adType]);
 
   const popupSkippable = adType === 'popup' ? elapsed >= profile.durationCap : true;
 

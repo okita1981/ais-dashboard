@@ -14,13 +14,15 @@ import LoginPage from './components/LoginPage';
 import { DEFAULT_WEIGHTS, calculateExposure, calculateVAF, calculateAIS, calculateIntegrityScore, getAISStatus } from './logic';
 import { AisWeights, AdData } from './types';
 import { MOCK_AD_DATA } from './constants';
-import { fetchLiveAisData } from './services/api';
+import { fetchLiveAisData, fetchDashboardData, DashboardData } from './services/api';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [weights, setWeights] = useState<AisWeights>(DEFAULT_WEIGHTS);
   const [ads, setAds] = useState<AdData[]>(MOCK_AD_DATA);
   const [liveHistory, setLiveHistory] = useState<AdData[]>([]);
+  const [liveDashboard, setLiveDashboard] = useState<DashboardData | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
   const [dataMode, setDataMode] = useState<'demo' | 'live'>('demo');
   const [isLiveLoading, setIsLiveLoading] = useState(false);
   const [selectedRange, setSelectedRange] = useState('直近30日間');
@@ -52,15 +54,25 @@ const App: React.FC = () => {
     setAds(simulatedAds);
   }, [selectedRange, dataMode]);
 
-  // Live Mode data fetching
+  // Live Mode data fetching — pulls from Supabase via /api/dashboard
   const fetchLiveData = async () => {
     if (dataMode !== 'live') return;
     setIsLiveLoading(true);
-    console.log('%c🔄 [LIVE] スプレッドシートから最新データを再取得中...', 'color: #45A29E; font-weight: bold;');
-    
+    setLiveError(null);
+    console.log('%c🔄 [LIVE] Supabaseから最新データを再取得中...', 'color: #45A29E; font-weight: bold;');
+
     try {
+      // Fetch aggregated dashboard data first (authoritative source of truth)
+      const dashboard = await fetchDashboardData(
+        selectedRange === '今日' ? '24h' :
+        selectedRange === '直近7日間' ? '7d' :
+        selectedRange === '直近30日間' ? '30d' :
+        'all'
+      );
+      setLiveDashboard(dashboard);
+
       const liveAds = await fetchLiveAisData();
-      
+
       if (!liveAds || liveAds.length === 0) {
         console.warn('%c[LIVE] 取得されたデータが空です。', 'color: orange; font-weight: bold;');
       }
@@ -74,20 +86,26 @@ const App: React.FC = () => {
       
       newData.forEach(ad => {
         const key = ad.token || ad.id;
-        
-        // Calculate the score for this specific entry
-        const exp = calculateExposure(
-          ad.log.duration, 
-          Number(ad.log.occupancy) || 0, 
-          Number(ad.log.volumeLevel) || 0, 
-          ad.log.isSticky || false,
-          ad.log.isForced, 
-          ad.log.isInterrupted, 
-          ad.log.isAudioIntrusive, 
-          weights
-        );
-        const vaf = calculateVAF(ad.log.continueAfterAd, ad.log.noMute, ad.log.noSkip, ad.log.noLeave);
-        const score = calculateAIS(exp, vaf);
+
+        // If avgScore is already set by /api/dashboard (Supabase aggregates),
+        // trust it as authoritative. Otherwise recalculate from log fields.
+        let score: number;
+        if (typeof ad.avgScore === 'number') {
+          score = ad.avgScore;
+        } else {
+          const exp = calculateExposure(
+            ad.log.duration,
+            Number(ad.log.occupancy) || 0,
+            Number(ad.log.volumeLevel) || 0,
+            ad.log.isSticky || false,
+            ad.log.isForced,
+            ad.log.isInterrupted,
+            ad.log.isAudioIntrusive,
+            weights
+          );
+          const vaf = calculateVAF(ad.log.continueAfterAd, ad.log.noMute, ad.log.noSkip, ad.log.noLeave);
+          score = calculateAIS(exp, vaf);
+        }
         
         if (!aggregatedMap.has(key)) {
           aggregatedMap.set(key, { 
@@ -119,6 +137,7 @@ const App: React.FC = () => {
       console.error('%c❌ [LIVE FETCH ERROR] データの取得に失敗しました。', 'color: red; font-weight: bold;');
       console.error('%c理由:', 'color: red;', error.message || error);
       if (error.stack) console.error('%cスタックトレース:', 'color: red; font-size: 10px;', error.stack);
+      setLiveError(error.message || String(error));
     } finally {
       setIsLiveLoading(false);
     }
@@ -131,15 +150,17 @@ const App: React.FC = () => {
     if (dataMode === 'demo') {
       setAds(MOCK_AD_DATA);
       setLiveHistory([]);
+      setLiveDashboard(null);
+      setLiveError(null);
     } else {
       // Clear ads immediately when switching to live to avoid showing demo data
       setAds([]);
       setLiveHistory([]);
       fetchLiveData();
-      // Set up 60s polling
+      // Poll every 10s for fresher updates (was 60s with GAS)
       interval = setInterval(() => {
         fetchLiveData();
-      }, 60000);
+      }, 10000);
     }
 
     return () => {
@@ -183,12 +204,14 @@ const App: React.FC = () => {
     switch (activeTab) {
       case 'dashboard':
         return (
-          <Dashboard 
-            weights={weights} 
-            ads={ads} 
-            liveHistory={liveHistory} 
-            dataMode={dataMode} 
-            setDataMode={setDataMode} 
+          <Dashboard
+            weights={weights}
+            ads={ads}
+            liveHistory={liveHistory}
+            liveDashboard={liveDashboard}
+            liveError={liveError}
+            dataMode={dataMode}
+            setDataMode={setDataMode}
             isLiveLoading={isLiveLoading}
             selectedRange={selectedRange}
             setSelectedRange={setSelectedRange}
@@ -210,12 +233,14 @@ const App: React.FC = () => {
         return <DemoPage weights={weights} />;
       default:
         return (
-          <Dashboard 
-            weights={weights} 
-            ads={ads} 
-            liveHistory={liveHistory} 
-            dataMode={dataMode} 
-            setDataMode={setDataMode} 
+          <Dashboard
+            weights={weights}
+            ads={ads}
+            liveHistory={liveHistory}
+            liveDashboard={liveDashboard}
+            liveError={liveError}
+            dataMode={dataMode}
+            setDataMode={setDataMode}
             isLiveLoading={isLiveLoading}
             selectedRange={selectedRange}
             setSelectedRange={setSelectedRange}
