@@ -1,0 +1,5 @@
+{
+  "name": "AIS (Attention Integrity Standard) Dashboard",
+  "description": "広告侵入スコアを可視化し、ユーザー体験を損なわない最適な広告配信を支援するダッシュボード。総イベント数、平均AISスコア、改善の伸びしろなどの重要指標をリアルタイムで分析します。",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIS SDK Standalone Demo</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #f0f2f5; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .ad-unit { 
+            width: 100%; 
+            height: 250px; 
+            background: #000; 
+            color: white; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            margin: 20px 0;
+            border-radius: 8px;
+            position: relative;
+        }
+        .ad-label { position: absolute; top: 10px; left: 10px; background: rgba(255,255,255,0.2); padding: 2px 6px; font-size: 10px; border-radius: 4px; }
+        .status { font-size: 12px; color: #666; margin-top: 20px; border-top: 1px solid #eee; padding-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AIS SDK 動作確認用デモページ</h1>
+        <p>このページは SDK の連続計測と GAS への送信をテストするためのスタンドアロンページです。</p>
+        
+        <div class="ad-unit ais-ad">
+            <div class="ad-label">SPONSORED</div>
+            <div>
+                <p style="text-align: center; font-weight: bold;">テスト広告ユニット</p>
+                <p style="text-align: center; font-size: 14px; opacity: 0.7;">(この要素が監視対象です)</p>
+                <video width="200" controls muted style="display: block; margin: 10px auto;">
+                    <source src="https://www.w3schools.com/html/mov_bbb.mp4" type="video/mp4">
+                </video>
+            </div>
+        </div>
+
+        <div class="status">
+            <p><strong>SDK Status:</strong> コンソールログを確認してください (F12)</p>
+            <p><strong>Selector:</strong> .ais-ad</p>
+            <p><strong>Token:</strong> ais-standalone-test</p>
+        </div>
+    </div>
+
+    <!-- SDKの読み込み (Vite環境下では /ais-sdk.js でアクセス可能) -->
+    <script 
+        src="/ais-sdk.js" 
+        data-token="ais-standalone-test" 
+        data-selector=".ais-ad"
+        data-preset="standalone-demo"
+    ></script>
+</body>
+</html>
